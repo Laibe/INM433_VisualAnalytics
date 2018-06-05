@@ -1,0 +1,374 @@
+# Factors Explaining the Spatial Variations in the Results of the Swiss Popular Initiative ”Against Mass Immigration”
+This code is sparsley commented - please refer to the report for more details and the documentation of tmap
+https://cran.r-project.org/web/packages/tmap/vignettes/tmap-nutshell.html 
+
+## Configure R and load data
+
+```{r, echo=TRUE, eval=FALSE}
+install.packages("spgwr")
+```
+
+```{r, echo=TRUE, eval=FALSE}
+# For spatial data handling
+library(rgdal)
+library(car)
+library(spdep)
+library(RColorBrewer)
+library(rgeos)
+# For charting
+library(tmap)
+library(cartogram)
+library(ggplot2)
+library(gridExtra)
+library(GGally)
+# For data loding and munging
+library(readr)
+library(dplyr)
+library(tidyr)
+# For spatial stats
+library(GWmodel)
+library(spdep)
+# For cluster analysis
+library(cluster)
+library(car)
+library(knitr)
+library(spgwr)
+```
+
+
+```{r, echo=TRUE, eval=FALSE}
+# read .csv containing referendum results data into an R DataFrame. 
+referendum_data<- read_csv("./data/referendum.csv")
+census_data<- read_csv("./data/census.csv")
+
+# iterate over OA level data and compute summary statistics on relevant variables 
+# Read in shapefile 
+ch_kanton <- readOGR(dsn = "shapefiles", layer = "Kantone")
+ch_kanton@data$AK <- as.character(ch_kanton@data$AK)
+# merge results and census data with SpatialDataFrame  
+# inner_join function.
+ch_kanton@data <- inner_join(ch_kanton@data, referendum_data,  by=c("AK" =  "AK"))
+ch_kanton@data <- inner_join(ch_kanton@data, census_data, by=c("AK" =  "AK"))
+# rename  
+rm(referendum_data)
+rm(census_data)
+```
+
+## Exploring spatial variation in the Yes:No vote 
+We first observe how voting preference, the percentage of people voting against mass migration in CH cantons, varies geographically by plotting the raw scores on a map.
+
+```{r, echo=TRUE, eval=FALSE}
+# A SpatialDataFrame must always be supplied to tm_shape(). To tm_fill(), we identify the variable values 
+# on which polygons should be coloured as well as information such as the colour mapping (sequential, diverging 
+# or continuous) and palette to use. Many, many layout specifications are available in tm_layout. Type ?tm_layout
+# into the Console for a complete list.
+outcomemap <- tm_shape(ch_kanton) +  
+  tm_fill(col="cross_border",style="cont",palette="BrBG", size=0.2, id="AK", title="") + 
+  tm_layout(
+     title="% points",
+     title.snap.to.legend=TRUE,
+     title.size=0.8,
+     legend.text.size=0.6,
+     title.position = c("left", "center"),
+     legend.position = c("left","center"),
+     frame=FALSE,
+     legend.outside=TRUE)
+
+outcomemap
+```
+
+### Cartogram 
+
+```{r, echo=TRUE, eval=FALSE}
+ch_kanton_carto <- cartogram(ch_kanton, "Electorate", itermax=5)
+```
+
+```{r, echo=TRUE, eval=FALSE}
+# Plot the SpatialDataFrame via tm_shape() and tm_fill()
+tm_shape(ch_kanton_carto) +  
+  tm_fill(col="Yes_No",style="cont",palette="BrBG", size=0.2, id="AK", title="") + 
+  tm_layout(
+     title="% point against mass immigration",
+     title.snap.to.legend=TRUE,
+     title.size=0.8,
+     legend.text.size=0.6,
+     title.position = c("right", "center"),
+     legend.position = c("right","center"),
+     frame=FALSE,
+     legend.outside=TRUE)
+
+```
+
+
+```{r, echo=TRUE, eval=FALSE}
+# Interactive mode.
+tmap_mode("view")
+# Static mode:
+tmap_mode("plot")
+```
+
+
+## What drives Canton voting preference?
+
+To explore these variables' effect on voting preference, we can create a set of scatter plots that display relationships between each explanatory variable and the vote outcome. Note that in a similar way that spatial units in cartograms are sized according to a variable of interest, we size the points in the scatter plots by their electoral size and colour by Region.
+
+```{r, echo=TRUE, eval=FALSE}
+ch_kanton@data %>%
+  ggplot(aes(x=private_transport_to_work, y=Yes_No))+ 
+  geom_point(aes(fill=Yes_No, size=Electorate),colour="#525252",pch=21) +
+  stat_smooth(method=lm, se=FALSE, size=1, colour="#525252")+
+  scale_fill_distiller("BrBG", type="div", direction=1, guide="colourbar", limits=c(-0.29,0.29))+
+  theme_bw()+
+  theme(legend.position="none")+
+  ggtitle(paste("correlation:",round(cor.test(ch_kanton@data$Yes_No,ch_kanton@data$foreign_nationals)$estimate,2)))
+
+```
+
+To create a scatter plot for each variable vs the Yes/No vote at once we can create a gird-plot via facet_wrap.
+
+```{r, echo=TRUE, eval=FALSE}
+ch_kanton@data %>%
+  gather(c(population1000,age_65_plus,living_city,foreign_nationals,roman_catholic,evangelical,without_confession,unemployment,gdp_capita,change_gdp,primary_sector,secondary_sector,tertiary_sector,homeownership,cars,puplic_transport_to_work,private_transport_to_work,socialsecuritybeneficiary,degree_educ,criminal_offences_cc,blue_collar), key = "expl_var", value="canton_prop") %>%
+  ggplot(aes(x=canton_prop, y=Yes_No))+ 
+  geom_point(aes(fill=Yes_No, size=Electorate),colour="#525252",pch=21) +
+  stat_smooth(method=lm, se=FALSE, size=1, colour="#525252")+
+  scale_fill_distiller("BrBG", type="div", direction=1, guide="colourbar", limits=c(-0.29,0.29))+
+  facet_wrap(~expl_var, scales="free")+
+  theme_bw()+
+  theme(legend.position="none")
+  #ggtitle(paste("correlation:",round(cor.test(ch_kanton@data$Yes_No,ch_kanton@data$immigrants)$estimate,2)))
+#cars,criminal_offences_cc,degree_educ,SVP,small_right_wing,private_transport_to_work,roman_catholic,age_65_plus
+```
+
+Let's narrow it down to the variables with the largest correlation.
+
+```{r, echo=TRUE, eval=FALSE}
+corrfacet_canton <- ch_kanton@data %>%
+  gather(c(degree_educ,age_65_plus,private_transport_to_work,homeownership,foreign_nationals,unemployment,change_gdp,blue_collar,criminal_offences_cc,pop_change,cross_border), key = "expl_var", value="canton_prop") %>%
+  ggplot(aes(x=canton_prop, y=Yes_No))+ 
+  geom_point(aes(fill=Yes_No, size=Electorate),colour="#525252",pch=21) +
+  stat_smooth(method=lm, se=FALSE, size=1, colour="#525252")+
+  scale_fill_distiller("BrBG", type="div", direction=1, guide="colourbar", limits=c(-0.29,0.29))+
+  facet_wrap(~expl_var, scales="free")+
+  theme_bw()+
+  theme(legend.position="none")
+
+corrfacet_canton
+
+```
+
+
+```{r}
+ggsave("corrfacet_canton.eps", plot = corrfacet_canton,width = 10)
+```
+
+Note that the Tessin is an outlier in almost all scatter plots.
+
+
+## Basic Robust Regression GWR model selection
+
+Bandwidth was choosen arbitrarly at 50 
+
+```{r, echo=TRUE, eval=FALSE}}
+
+DeVar <- "Yes"
+InDeVars <- c("pop_change","pop_density","age_65_plus","living_city","foreign_nationals","roman_catholic","unemployment","homeownership","puplic_transport_to_work","private_transport_to_work","socialsecuritybeneficiary","degree_educ","criminal_offences_cc","blue_collar")
+model.sel <- model.selection.gwr(DeVar, InDeVars, data = ch_kanton,kernel = "bisquare", adaptive = TRUE, bw = 50)
+sorted.models <- model.sort.gwr(model.sel, numVars = length(InDeVars),ruler.vector = model.sel[[2]][,2])
+model.list <- sorted.models[[1]]
+model.view.gwr(DeVar, InDeVars, model.list = model.list)
+plot(sorted.models[[2]][,2], col = "black", pch = 20, lty = 5,main = "GWR model selection procedure",ylab = "AICc", xlab = "Model number", type = "b")
+
+```
+
+```{r}
+# AIC of best performing model
+sorted.models[[2]][,2][84]
+# coefficients selected 
+sorted.models[[1]][[84]][[1]]
+```
+
+Calculate VIF scores to investigate potential collinearity: 
+
+```{r}
+lm.global <- lm(Yes~criminal_offences_cc+degree_educ+age_65_plus+private_transport_to_work+homeownership+foreign_nationals+unemployment+socialsecuritybeneficiary, data=ch_kanton@data)
+summary(lm.global)
+vif(lm.global)
+
+```
+
+Correlation Matrix:
+
+```{r, echo=TRUE, eval=FALSE}
+# Generate correlation coefficient matrix
+ch_kanton@data %>% 
+ select(Yes_No,pop_change,pop_density,age_65_plus,living_city,foreign_nationals,roman_catholic,unemployment,change_gdp,homeownership,puplic_transport_to_work,private_transport_to_work,socialsecuritybeneficiary,degree_educ,criminal_offences_cc,blue_collar) %>%
+ggcorr(label=TRUE,nbreaks=5,  geom = "text", hjust = 1, size = 2, palette = "RdBu", label_alpha=0.1,label_size
+=2)
+
+corrmatrix <-ch_kanton@data %>% 
+ select(Yes,degree_educ,age_65_plus,private_transport_to_work,homeownership,foreign_nationals,unemployment,change_gdp,blue_collar,criminal_offences_cc,pop_change) %>%
+ggcorr(label=TRUE,nbreaks=5,  geom = "text", hjust = 1, size = 4, palette = "RdBu", label_alpha=0.1,label_size
+=4,layout.exp = 2)
+corrmatrix
+
+```
+
+
+```{r}
+ggsave("corrmatrix.eps", plot = corrmatrix,width = 10)
+```
+
+
+Plot one of the correlation coefficients
+```{r, echo=TRUE, eval=FALSE}
+# Note that we use the 'optimal' bandwidth derived from the bw.gwr() function.
+gw_ss <- gwss(ch_kanton, vars  =  c("Yes","degree_educ","age_65_plus","private_transport_to_work","homeownership","foreign_nationals","unemployment","blue_collar","criminal_offences_cc","cross_border","change_gdp"),
+                  kernel = "bisquare", adaptive = TRUE, bw = 24, quantile = TRUE)
+
+gwcorr <- tm_shape(gw_ss$SDF) +
+  tm_fill(col=colnames(gw_ss$SDF@data[119:119]), title="", style="cont",palette="BrBG", size=0.2) + 
+  tm_facets(free.scales = FALSE) +
+  tm_layout(
+     title=colnames(gw_ss$SDF@data[119:119]),
+     frame=FALSE,
+     title.snap.to.legend=TRUE,
+     title.size=0.8,
+     title.position = c("left", "top"),
+     inner.margins = c(0,0,0.15,0),
+     legend.title.size=1,
+     legend.text.size=0.6,
+     legend.outside=FALSE)
+gwcorr
+```
+
+
+```{r}
+save_tmap(gwcorr, "gwcorr_cross_border.png", height=5)
+
+```
+
+
+### Refined model (Model 8)
+Due to high VIF scores and correlation coefficients, a sparse model with only two variables was selected: unemployment and private_transport_to_work 
+
+
+```{r}
+# Determine optimal bandwith for the refined GWR model:
+bw.gwr.1 <- bw.gwr(Yes ~ private_transport_to_work + unemployment, data = ch_kanton,approach = "AICc", kernel = "bisquare", adaptive = TRUE)
+bw.gwr.1
+```
+
+```{r}
+# Create GW regression model
+gwr.res <- gwr.basic(Yes ~ 
+    + unemployment + private_transport_to_work, data = ch_kanton,bw = 23, kernel = "bisquare", adaptive = TRUE, F123.test = TRUE)
+print(gwr.res)
+```
+
+
+```{r}
+# Plot the residuals
+gwr.res.resids <- tm_shape(gwr.res$SDF) +  
+  tm_fill(col="residual",style="cont",palette="RdBu", size=0.2, id="AK", title="") + 
+  tm_layout(
+     title="Residuals",
+     title.snap.to.legend=TRUE,
+     title.size=0.8,
+     legend.text.size=0.6,
+     title.position = c("left", "top"),
+     legend.position = c("left","top"),
+     frame=FALSE,
+     legend.outside=TRUE)
+
+gwr.res.resids
+```
+```{r}
+save_tmap(gwr.res.resids, "residual_map_2.png", height=5)
+```
+
+
+```{r}
+# Global condition number
+nobs <- dim(ch_kanton)[1]
+lcrm1 <- gwr.lcr(Yes ~ private_transport_to_work+unemployment + cross_border, data = ch_kanton, bw = nobs,kernel = "boxcar", adaptive = TRUE)
+summary(lcrm1$SDF$Local_CN)
+```
+
+
+### Adding addtional (external) variable cross_border - Model8+ 
+
+```{r}
+gwr_plus.res <- gwr.basic(Yes ~ 
+    + unemployment + private_transport_to_work + cross_border, data = ch_kanton,bw = 23, kernel = "bisquare", adaptive = TRUE, F123.test = TRUE)
+print(gwr_plus.res)
+```
+
+```{r}
+# Plot residuals
+gwr_plus.res.resids <- tm_shape(gwr.res$SDF) +  
+  tm_fill(col="residual",style="cont",palette="RdBu", size=0.2, id="AK", title="") + 
+  tm_layout(
+     title="Residuals",
+     title.snap.to.legend=TRUE,
+     title.size=0.8,
+     legend.text.size=0.6,
+     title.position = c("left", "top"),
+     legend.position = c("left","top"),
+     frame=FALSE,
+     legend.outside=TRUE)
+
+gwr_plus.res.resids
+```
+
+
+## BKW condition numbers for various models
+```{r}
+
+test.CN <- function(model, data) {
+lcrmx.bw <- bw.gwr.lcr(model, data = data, kernel = "bisquare",
+adaptive = TRUE)
+print(model)
+print(lcrmx.bw)
+lcrmx <- gwr.lcr(model, data = data, bw = lcrmx.bw,
+kernel = "bisquare", adaptive = TRUE)
+print(summary(lcrmx$SDF$Local_CN))
+lcrmx$SDF$Local_CN
+}
+data <- ch_kanton
+
+model1 <- as.formula(Yes~criminal_offences_cc+blue_collar+degree_educ+age_65_plus+change_gdp+homeownership+foreign_nationals+unemployment+private_transport_to_work)
+Model1  <- test.CN(model1, data)
+
+
+model2 <- as.formula(Yes~blue_collar+degree_educ+age_65_plus+change_gdp+homeownership+foreign_nationals+unemployment+private_transport_to_work)
+Model2 <- test.CN(model2, data)
+
+model3 <- as.formula(Yes~degree_educ+age_65_plus+change_gdp+homeownership+foreign_nationals+unemployment+private_transport_to_work)
+Model3 <- test.CN(model3, data)
+
+model4 <- as.formula(Yes~age_65_plus+change_gdp+homeownership+foreign_nationals+unemployment+private_transport_to_work)
+Model4 <- test.CN(model4, data)
+
+model5 <- as.formula(Yes ~ change_gdp+homeownership+foreign_nationals+unemployment+private_transport_to_work)
+Model5 <- test.CN(model5, data)
+
+model6 <- as.formula(Yes ~ homeownership+foreign_nationals+unemployment+private_transport_to_work)
+Model6 <- test.CN(model6, data)
+
+model7 <- as.formula(Yes ~ foreign_nationals+unemployment+private_transport_to_work)
+Model7 <- test.CN(model7, data)
+
+model8 <- as.formula(Yes ~ unemployment+private_transport_to_work)
+Model8 <- test.CN(model8, data)
+
+model8plus <- as.formula(Yes ~ unemployment+private_transport_to_work+cross_border)
+Model8plus <- test.CN(model8plus, data)
+
+```
+
+```{r}
+
+bkwbox <- boxplot(Model1,Model2,Model3,Model4,Model5,Model6,Model7,Model8,Model8plus, ylab = "BKW condition number", xlab = "",names = c("Model1","Model2","Model3","Model4","Model5","Model6","Model7","Model8","Model8+"))
+
+```
